@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 import sqlite3
 from openai import OpenAI
@@ -18,27 +19,44 @@ client = OpenAI(
 )
 
 # ======================
-# CASE SYSTEM
+# CASE SYSTEM（优化版）
 # ======================
 CASES = {
     "price_case": {
         "name": "服务报价谈判",
-        "topic": "服务报价120元，买方希望压价到85元",
-        "seller_opening": 120,
+        "topic": "价格谈判场景：双方就服务单价进行协商",
         "buyer_target": 85,
-        "seller_min": 105
+        "buyer_floor": 100,   # 买方底线（最高可接受价格）
+        "seller_opening": 120
     },
     "salary_case": {
         "name": "薪资谈判",
-        "topic": "岗位薪资谈判：HR给出12000元月薪，候选人期望15000元",
-        "hr_opening": 12000,
-        "hr_floor": 15000,
-        "candidate_floor": 13000
+        "topic": "薪资谈判场景：公司与候选人协商月薪",
+        "candidate_target": 15000,
+        "candidate_floor": 13000,  # 候选人最低可接受
+        "hr_opening": 12000
     }
 }
 
 case_key = st.sidebar.selectbox("📦 Select Case", list(CASES.keys()))
 case = CASES[case_key]
+
+# ======================
+# UI 展示 CASE 信息（重点优化）
+# ======================
+st.sidebar.markdown("## 📌 Case Info")
+
+if case_key == "price_case":
+    st.sidebar.write("**类型：价格谈判**")
+    st.sidebar.write("买家目标：85 元/件")
+    st.sidebar.write("买家底线：100 元/件（最高可接受）")
+    st.sidebar.write("卖家开价：120 元/件")
+
+else:
+    st.sidebar.write("**类型：薪资谈判**")
+    st.sidebar.write("候选人目标：15000 元/月")
+    st.sidebar.write("候选人底线：13000 元/月")
+    st.sidebar.write("HR起薪：12000 元/月")
 
 # ======================
 # ⭐ 最少轮次控制
@@ -106,11 +124,14 @@ if "turn_stage" not in st.session_state:
     st.session_state.turn_stage = "init"
 
 # ======================
+# PAGE CONFIG
+# ======================
+st.set_page_config(page_title="AI Negotiation System", layout="wide")
+st.title("🤖 Negotiation Lab (Enhanced Evaluation Version)")
+
+# ======================
 # LOGIN
 # ======================
-st.set_page_config(page_title="AI Negotiation Role System", layout="wide")
-st.title("🤖 Role-Based Negotiation System (MVP+3R Rounds)")
-
 if st.session_state.user is None:
     st.subheader("🔐 Login")
 
@@ -150,9 +171,8 @@ if st.session_state.role is None:
 st.sidebar.success(f"User: {st.session_state.user}")
 st.sidebar.info(f"Role: {st.session_state.role}")
 st.sidebar.metric("Turns", st.session_state.turns)
-st.sidebar.metric("Min Turns Required", MIN_TURNS)
 
-st.title(f"💬 Negotiation Room - {case['name']}")
+st.title(f"💬 {case['name']}")
 st.write("📌 Scenario:", case["topic"])
 
 # ======================
@@ -169,20 +189,23 @@ def get_ai_response(messages, case):
 
     if case_key == "price_case":
         system_prompt = f"""
-You are SELLER.
+You are SELLER in a price negotiation.
 
-Opening price: {case['seller_opening']}
-Minimum price: {case['seller_min']}
-Negotiate strategically.
+Seller opening price: {case['seller_opening']}
+Buyer max acceptable price: {case['buyer_floor']}
+Buyer target price: {case['buyer_target']}
+
+Negotiate strategically. Do not concede too quickly.
 """
     else:
         system_prompt = f"""
 You are HR in salary negotiation.
 
-Opening salary: {case['hr_opening']}
-HR floor limit: {case['hr_floor']}
-Candidate expectation: {case['candidate_floor']}
-Negotiate strategically.
+HR opening salary: {case['hr_opening']}
+Candidate target salary: {case['candidate_target']}
+Candidate minimum acceptable salary: {case['candidate_floor']}
+
+Negotiate strategically. Try to optimize company cost.
 """
 
     resp = client.chat.completions.create(
@@ -198,9 +221,9 @@ Negotiate strategically.
 if st.session_state.turn_stage == "ai_opening":
 
     if case_key == "price_case":
-        opening = f"初始报价：{case['seller_opening']}元。"
+        opening = f"初始报价：{case['seller_opening']} 元/件。"
     else:
-        opening = f"初始薪资：{case['hr_opening']}元/月。"
+        opening = f"初始薪资：{case['hr_opening']} 元/月。"
 
     st.session_state.messages.append({
         "role": "assistant",
@@ -235,23 +258,37 @@ if user_input:
     st.rerun()
 
 # ======================
-# EVALUATION（核心控制：至少3轮）
+# ⭐ ENHANCED EVALUATION（核心升级）
 # ======================
 def evaluate():
 
     convo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
 
     prompt = f"""
-Evaluate negotiation performance.
+You are a professional negotiation coach.
+
+Evaluate USER performance in this negotiation.
 
 Case: {case['name']}
+Scenario: {case['topic']}
 Role: {st.session_state.role}
 
 Conversation:
 {convo}
 
-Return JSON:
-{{"score": int, "win_rate": float}}
+Return STRICT JSON:
+
+{{
+  "score": int,
+  "win_rate": float,
+  "feedback": "string (3-5 sentences)",
+  "suggestions": "string (3 actionable bullet points)"
+}}
+
+Rules:
+- Be strict but fair
+- feedback must explain performance quality
+- suggestions must be practical and specific
 """
 
     r = client.chat.completions.create(
@@ -269,11 +306,11 @@ st.markdown("---")
 if st.button("📊 Evaluate"):
 
     if st.session_state.turns < MIN_TURNS:
-        st.warning(f"⚠️ 请至少完成 {MIN_TURNS} 轮谈判后再评分")
+        st.warning(f"⚠️ Please complete at least {MIN_TURNS} negotiation rounds before evaluation")
     else:
         result = evaluate()
 
-        st.write("🏆 Result")
+        st.subheader("🏆 Evaluation Result")
         st.code(result)
 
         save_record(
