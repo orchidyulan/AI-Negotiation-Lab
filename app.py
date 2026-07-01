@@ -1,13 +1,26 @@
+import os
 import streamlit as st
 import sqlite3
 from openai import OpenAI
 
 # ======================
-# AI配置
+# 🔐 API Key 安全配置（核心升级）
 # ======================
 
+# 优先读取 Streamlit Cloud secrets，其次读取本地环境变量
+api_key = None
+
+if "OPENAI_API_KEY" in st.secrets:
+    api_key = st.secrets["OPENAI_API_KEY"]
+else:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("❌ 未检测到 OPENAI_API_KEY，请在 Streamlit secrets 或环境变量中配置")
+    st.stop()
+
 client = OpenAI(
-    api_key="sk-2a48b88154234a8487f79efac930729e",
+    api_key=api_key,
     base_url="https://api.deepseek.com"
 )
 
@@ -74,7 +87,10 @@ def register(username, password):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        c.execute(
+            "INSERT INTO users (username, password) VALUES (?, ?)",
+            (username, password)
+        )
         conn.commit()
         return True
     except:
@@ -86,7 +102,10 @@ def register(username, password):
 def login(username, password):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+    c.execute(
+        "SELECT * FROM users WHERE username=? AND password=?",
+        (username, password)
+    )
     result = c.fetchone()
     conn.close()
     return result is not None
@@ -106,7 +125,10 @@ def save_record(username, case_name, winner, buyer_score, seller_score):
 def get_records(username):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT case_name, winner, buyer_score, seller_score FROM records WHERE username=?", (username,))
+    c.execute(
+        "SELECT case_name, winner, buyer_score, seller_score FROM records WHERE username=?",
+        (username,)
+    )
     data = c.fetchall()
     conn.close()
     return data
@@ -137,18 +159,25 @@ if st.session_state.user is None:
     username = st.text_input("用户名")
     password = st.text_input("密码", type="password")
 
+    # ======================
+    # 注册（只注册，不登录）
+    # ======================
     if mode == "注册":
         if st.button("注册"):
             if register(username, password):
-                st.success("注册成功，请登录")
+                st.success("注册成功，请返回登录")
             else:
                 st.error("用户已存在")
 
+    # ======================
+    # 登录（唯一进入系统入口）
+    # ======================
     if mode == "登录":
         if st.button("登录"):
             if login(username, password):
                 st.session_state.user = username
                 st.success("登录成功")
+                st.rerun()   # ⭐只有登录才进入系统
             else:
                 st.error("登录失败")
 
@@ -215,7 +244,7 @@ if st.button("▶️ 开始谈判"):
         st.markdown(f"🟥 卖方：{seller_resp}")
 
     # ======================
-    # 简化评分系统（稳定版）
+    # 评分系统
     # ======================
 
     buyer_score = len(buyer_history) * 20
@@ -229,7 +258,7 @@ if st.button("▶️ 开始谈判"):
     st.write("🏆 胜者：", winner)
 
     # ======================
-    # 存储到数据库（SaaS核心）
+    # 存储 SaaS 数据
     # ======================
 
     save_record(
@@ -241,7 +270,7 @@ if st.button("▶️ 开始谈判"):
     )
 
 # ======================
-# 历史记录（SaaS核心）
+# 历史记录
 # ======================
 
 st.markdown("---")
