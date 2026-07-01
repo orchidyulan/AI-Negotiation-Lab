@@ -4,19 +4,12 @@ import sqlite3
 from openai import OpenAI
 
 # ======================
-# 🔐 API Key 安全配置（核心升级）
+# 🔐 API KEY
 # ======================
-
-# 优先读取 Streamlit Cloud secrets，其次读取本地环境变量
-api_key = None
-
-if "OPENAI_API_KEY" in st.secrets:
-    api_key = st.secrets["OPENAI_API_KEY"]
-else:
-    api_key = os.getenv("OPENAI_API_KEY")
+api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not api_key:
-    st.error("❌ 未检测到 OPENAI_API_KEY，请在 Streamlit secrets 或环境变量中配置")
+    st.error("Missing OPENAI_API_KEY")
     st.stop()
 
 client = OpenAI(
@@ -25,30 +18,23 @@ client = OpenAI(
 )
 
 # ======================
-# CASE系统
+# CASE SYSTEM
 # ======================
-
 CASES = {
     "case1": {
         "name": "服务报价谈判",
         "topic": "服务报价120元，买方希望压价到85元",
-        "buyer_budget": 85,
-        "seller_price": 120,
+        "price": 120,
+        "buyer_target": 85,
         "seller_min": 105
-    },
-    "case2": {
-        "name": "咨询服务谈判",
-        "topic": "咨询服务报价200元",
-        "buyer_budget": 150,
-        "seller_price": 200,
-        "seller_min": 170
     }
 }
 
-# ======================
-# 数据库初始化
-# ======================
+case = CASES["case1"]
 
+# ======================
+# DB
+# ======================
 DB_PATH = "app.db"
 
 def init_db():
@@ -57,8 +43,7 @@ def init_db():
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
+        username TEXT PRIMARY KEY,
         password TEXT
     )
     """)
@@ -68,9 +53,9 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT,
         case_name TEXT,
-        winner TEXT,
-        buyer_score INTEGER,
-        seller_score INTEGER
+        role TEXT,
+        score INTEGER,
+        win_rate REAL
     )
     """)
 
@@ -79,212 +64,194 @@ def init_db():
 
 init_db()
 
-# ======================
-# 用户系统
-# ======================
-
-def register(username, password):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, password)
-        )
-        conn.commit()
-        return True
-    except:
-        return False
-    finally:
-        conn.close()
-
-
-def login(username, password):
+def save_record(user, case_name, role, score, win_rate):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "SELECT * FROM users WHERE username=? AND password=?",
-        (username, password)
+        "INSERT INTO records VALUES (NULL,?,?,?,?,?)",
+        (user, case_name, role, score, win_rate)
     )
-    result = c.fetchone()
-    conn.close()
-    return result is not None
-
-
-def save_record(username, case_name, winner, buyer_score, seller_score):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    INSERT INTO records (username, case_name, winner, buyer_score, seller_score)
-    VALUES (?, ?, ?, ?, ?)
-    """, (username, case_name, winner, buyer_score, seller_score))
     conn.commit()
     conn.close()
 
-
-def get_records(username):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "SELECT case_name, winner, buyer_score, seller_score FROM records WHERE username=?",
-        (username,)
-    )
-    data = c.fetchall()
-    conn.close()
-    return data
-
 # ======================
-# 页面配置
+# SESSION STATE
 # ======================
-
-st.set_page_config(page_title="AI谈判SaaS系统", layout="wide")
-st.title("🤖 AI谈判训练平台 SaaS版")
-
-# ======================
-# Session状态
-# ======================
-
 if "user" not in st.session_state:
     st.session_state.user = None
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "turns" not in st.session_state:
+    st.session_state.turns = 0
+
+if "role" not in st.session_state:
+    st.session_state.role = None
+
 # ======================
-# 登录/注册
+# LOGIN (SIMPLE)
 # ======================
+st.set_page_config(page_title="AI Negotiation Role System", layout="wide")
+st.title("🤖 Role-Based Negotiation System")
 
 if st.session_state.user is None:
 
-    st.subheader("🔐 登录 / 注册")
+    st.subheader("🔐 Login")
 
-    mode = st.radio("选择模式", ["登录", "注册"])
-    username = st.text_input("用户名")
-    password = st.text_input("密码", type="password")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
 
-    # ======================
-    # 注册（只注册，不登录）
-    # ======================
-    if mode == "注册":
-        if st.button("注册"):
-            if register(username, password):
-                st.success("注册成功，请返回登录")
-            else:
-                st.error("用户已存在")
-
-    # ======================
-    # 登录（唯一进入系统入口）
-    # ======================
-    if mode == "登录":
-        if st.button("登录"):
-            if login(username, password):
-                st.session_state.user = username
-                st.success("登录成功")
-                st.rerun()   # ⭐只有登录才进入系统
-            else:
-                st.error("登录失败")
+    if st.button("Login"):
+        st.session_state.user = u
+        st.success("Login success")
+        st.rerun()
 
     st.stop()
 
 # ======================
-# 登录成功页面
+# ROLE SELECTION (NEW)
 # ======================
+if st.session_state.role is None:
 
-st.success(f"欢迎你：{st.session_state.user}")
+    st.subheader("🎭 Choose Your Role")
 
-case_id = st.selectbox("📦 选择谈判案例", list(CASES.keys()))
-case = CASES[case_id]
+    role = st.radio("Select role", ["Buyer", "Seller"])
 
-st.write("📌", case["topic"])
+    if st.button("Confirm Role"):
+        st.session_state.role = role
+        st.rerun()
+
+    st.stop()
 
 # ======================
-# 谈判系统
+# UI HEADER
 # ======================
+st.sidebar.success(f"User: {st.session_state.user}")
+st.sidebar.info(f"Role: {st.session_state.role}")
+st.sidebar.metric("Turns", st.session_state.turns)
 
-if st.button("▶️ 开始谈判"):
+st.title(f"💬 Negotiation Room - You are {st.session_state.role}")
 
-    buyer_history = []
-    seller_history = ""
+# ======================
+# CHAT DISPLAY
+# ======================
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.write(m["content"])
 
-    for i in range(3):
+# ======================
+# AI ENGINE (DYNAMIC ROLE)
+# ======================
+def get_ai_response(messages, user_role):
 
-        # ===== 买方 =====
-        buyer_prompt = f"""
-你是买方。
-预算上限：{case['buyer_budget']}
-请推进谈判，不要重复。
+    if user_role == "Buyer":
+        ai_role = "Seller"
+        system_prompt = f"""
+You are a professional negotiation AI acting as SELLER.
+
+Case:
+{case['topic']}
+
+Rules:
+- You are SELLER
+- Minimum acceptable price: {case['seller_min']}
+- Try to maximize price
+"""
+    else:
+        ai_role = "Buyer"
+        system_prompt = f"""
+You are a professional negotiation AI acting as BUYER.
+
+Case:
+{case['topic']}
+
+Rules:
+- You are BUYER
+- Target price: {case['buyer_target']}
+- Try to minimize price
 """
 
-        buyer_resp = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": buyer_prompt},
-                {"role": "user", "content": case["topic"]}
-            ]
-        ).choices[0].message.content
+    resp = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "system", "content": system_prompt}] + messages
+    )
 
-        buyer_history.append(buyer_resp)
+    return resp.choices[0].message.content
 
-        st.markdown(f"🟦 买方：{buyer_resp}")
+# ======================
+# INPUT FLOW
+# ======================
+user_input = st.chat_input("Enter your negotiation message...")
 
-        # ===== 卖方 =====
-        seller_prompt = f"""
-你是卖方。
-底价：{case['seller_min']}
-请推进谈判，不要重复。
+if user_input:
+
+    st.session_state.turns += 1
+
+    st.session_state.messages.append({
+        "role": "user",
+        "content": user_input
+    })
+
+    with st.spinner("AI thinking..."):
+        ai_reply = get_ai_response(st.session_state.messages, st.session_state.role)
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": ai_reply
+    })
+
+    st.rerun()
+
+# ======================
+# EVALUATION (ROLE AWARE)
+# ======================
+def evaluate():
+
+    convo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
+
+    prompt = f"""
+Evaluate USER performance in negotiation.
+
+User role: {st.session_state.role}
+
+Conversation:
+{convo}
+
+Return JSON:
+{{"score": int, "win_rate": float}}
 """
 
-        seller_resp = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": seller_prompt},
-                {"role": "user", "content": buyer_resp}
-            ]
-        ).choices[0].message.content
+    r = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "system", "content": prompt}]
+    )
 
-        seller_history += seller_resp
+    return r.choices[0].message.content
 
-        st.markdown(f"🟥 卖方：{seller_resp}")
+# ======================
+# BUTTON
+# ======================
+st.markdown("---")
 
-    # ======================
-    # 评分系统
-    # ======================
+if st.button("📊 Evaluate"):
+    result = evaluate()
 
-    buyer_score = len(buyer_history) * 20
-    seller_score = len(seller_history) // 50
-
-    winner = "buyer" if buyer_score > seller_score else "seller"
-
-    st.subheader("📊 评分结果")
-    st.write("买方得分：", buyer_score)
-    st.write("卖方得分：", seller_score)
-    st.write("🏆 胜者：", winner)
-
-    # ======================
-    # 存储 SaaS 数据
-    # ======================
+    st.write("🏆 Result")
+    st.code(result)
 
     save_record(
         st.session_state.user,
         case["name"],
-        winner,
-        buyer_score,
-        seller_score
+        st.session_state.role,
+        80,
+        0.85
     )
 
 # ======================
-# 历史记录
+# RESET
 # ======================
-
-st.markdown("---")
-st.subheader("📚 我的历史记录")
-
-records = get_records(st.session_state.user)
-
-if records:
-    for r in records:
-        st.write({
-            "case": r[0],
-            "winner": r[1],
-            "buyer_score": r[2],
-            "seller_score": r[3]
-        })
-else:
-    st.info("暂无记录")
+if st.button("🔄 Reset Session"):
+    st.session_state.messages = []
+    st.session_state.turns = 0
+    st.rerun()
