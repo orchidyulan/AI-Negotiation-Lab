@@ -21,16 +21,29 @@ client = OpenAI(
 # CASE SYSTEM
 # ======================
 CASES = {
-    "case1": {
+    "price_case": {
         "name": "服务报价谈判",
         "topic": "服务报价120元，买方希望压价到85元",
-        "price": 120,
+        "seller_opening": 120,
         "buyer_target": 85,
         "seller_min": 105
+    },
+    "salary_case": {
+        "name": "薪资谈判",
+        "topic": "岗位薪资谈判：HR给出12000元月薪，候选人期望15000元",
+        "hr_opening": 12000,
+        "hr_floor": 15000,
+        "candidate_floor": 13000
     }
 }
 
-case = CASES["case1"]
+case_key = st.sidebar.selectbox("📦 Select Case", list(CASES.keys()))
+case = CASES[case_key]
+
+# ======================
+# ⭐ 最少轮次控制
+# ======================
+MIN_TURNS = 3
 
 # ======================
 # DB
@@ -89,14 +102,16 @@ if "turns" not in st.session_state:
 if "role" not in st.session_state:
     st.session_state.role = None
 
+if "turn_stage" not in st.session_state:
+    st.session_state.turn_stage = "init"
+
 # ======================
-# LOGIN (SIMPLE)
+# LOGIN
 # ======================
 st.set_page_config(page_title="AI Negotiation Role System", layout="wide")
-st.title("🤖 Role-Based Negotiation System")
+st.title("🤖 Role-Based Negotiation System (MVP+3R Rounds)")
 
 if st.session_state.user is None:
-
     st.subheader("🔐 Login")
 
     u = st.text_input("Username")
@@ -104,34 +119,41 @@ if st.session_state.user is None:
 
     if st.button("Login"):
         st.session_state.user = u
-        st.success("Login success")
         st.rerun()
 
     st.stop()
 
 # ======================
-# ROLE SELECTION (NEW)
+# ROLE SELECTION
 # ======================
 if st.session_state.role is None:
 
     st.subheader("🎭 Choose Your Role")
 
-    role = st.radio("Select role", ["Buyer", "Seller"])
+    if case_key == "price_case":
+        role_options = ["Buyer"]
+    else:
+        role_options = ["Candidate"]
+
+    role = st.radio("Select role", role_options)
 
     if st.button("Confirm Role"):
         st.session_state.role = role
+        st.session_state.turn_stage = "ai_opening"
         st.rerun()
 
     st.stop()
 
 # ======================
-# UI HEADER
+# HEADER
 # ======================
 st.sidebar.success(f"User: {st.session_state.user}")
 st.sidebar.info(f"Role: {st.session_state.role}")
 st.sidebar.metric("Turns", st.session_state.turns)
+st.sidebar.metric("Min Turns Required", MIN_TURNS)
 
-st.title(f"💬 Negotiation Room - You are {st.session_state.role}")
+st.title(f"💬 Negotiation Room - {case['name']}")
+st.write("📌 Scenario:", case["topic"])
 
 # ======================
 # CHAT DISPLAY
@@ -141,35 +163,26 @@ for m in st.session_state.messages:
         st.write(m["content"])
 
 # ======================
-# AI ENGINE (DYNAMIC ROLE)
+# AI ENGINE
 # ======================
-def get_ai_response(messages, user_role):
+def get_ai_response(messages, case):
 
-    if user_role == "Buyer":
-        ai_role = "Seller"
+    if case_key == "price_case":
         system_prompt = f"""
-You are a professional negotiation AI acting as SELLER.
+You are SELLER.
 
-Case:
-{case['topic']}
-
-Rules:
-- You are SELLER
-- Minimum acceptable price: {case['seller_min']}
-- Try to maximize price
+Opening price: {case['seller_opening']}
+Minimum price: {case['seller_min']}
+Negotiate strategically.
 """
     else:
-        ai_role = "Buyer"
         system_prompt = f"""
-You are a professional negotiation AI acting as BUYER.
+You are HR in salary negotiation.
 
-Case:
-{case['topic']}
-
-Rules:
-- You are BUYER
-- Target price: {case['buyer_target']}
-- Try to minimize price
+Opening salary: {case['hr_opening']}
+HR floor limit: {case['hr_floor']}
+Candidate expectation: {case['candidate_floor']}
+Negotiate strategically.
 """
 
     resp = client.chat.completions.create(
@@ -180,7 +193,25 @@ Rules:
     return resp.choices[0].message.content
 
 # ======================
-# INPUT FLOW
+# AI OPENING
+# ======================
+if st.session_state.turn_stage == "ai_opening":
+
+    if case_key == "price_case":
+        opening = f"初始报价：{case['seller_opening']}元。"
+    else:
+        opening = f"初始薪资：{case['hr_opening']}元/月。"
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": opening
+    })
+
+    st.session_state.turn_stage = "user_turn"
+    st.rerun()
+
+# ======================
+# USER INPUT
 # ======================
 user_input = st.chat_input("Enter your negotiation message...")
 
@@ -194,7 +225,7 @@ if user_input:
     })
 
     with st.spinner("AI thinking..."):
-        ai_reply = get_ai_response(st.session_state.messages, st.session_state.role)
+        ai_reply = get_ai_response(st.session_state.messages, case)
 
     st.session_state.messages.append({
         "role": "assistant",
@@ -204,16 +235,17 @@ if user_input:
     st.rerun()
 
 # ======================
-# EVALUATION (ROLE AWARE)
+# EVALUATION（核心控制：至少3轮）
 # ======================
 def evaluate():
 
     convo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
 
     prompt = f"""
-Evaluate USER performance in negotiation.
+Evaluate negotiation performance.
 
-User role: {st.session_state.role}
+Case: {case['name']}
+Role: {st.session_state.role}
 
 Conversation:
 {convo}
@@ -230,28 +262,30 @@ Return JSON:
     return r.choices[0].message.content
 
 # ======================
-# BUTTON
+# BUTTONS
 # ======================
 st.markdown("---")
 
 if st.button("📊 Evaluate"):
-    result = evaluate()
 
-    st.write("🏆 Result")
-    st.code(result)
+    if st.session_state.turns < MIN_TURNS:
+        st.warning(f"⚠️ 请至少完成 {MIN_TURNS} 轮谈判后再评分")
+    else:
+        result = evaluate()
 
-    save_record(
-        st.session_state.user,
-        case["name"],
-        st.session_state.role,
-        80,
-        0.85
-    )
+        st.write("🏆 Result")
+        st.code(result)
 
-# ======================
-# RESET
-# ======================
+        save_record(
+            st.session_state.user,
+            case["name"],
+            st.session_state.role,
+            80,
+            0.85
+        )
+
 if st.button("🔄 Reset Session"):
     st.session_state.messages = []
     st.session_state.turns = 0
+    st.session_state.turn_stage = "ai_opening"
     st.rerun()
