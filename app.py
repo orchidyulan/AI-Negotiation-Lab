@@ -19,22 +19,29 @@ client = OpenAI(
 )
 
 # ======================
-# CASE SYSTEM（优化版）
+# CASE SYSTEM（优化版：加入“隐藏底线”）
 # ======================
 CASES = {
     "price_case": {
         "name": "服务报价谈判",
         "topic": "价格谈判场景：双方就服务单价进行协商",
         "buyer_target": 85,
-        "buyer_floor": 100,   # 买方底线（最高可接受价格）
-        "seller_opening": 120
+        "buyer_floor_visible": 100,   # 给用户展示（UI）
+        "seller_opening": 120,
+
+        # ⭐隐藏设定（不展示）
+        "seller_floor_hidden": 100
     },
+
     "salary_case": {
         "name": "薪资谈判",
         "topic": "薪资谈判场景：公司与候选人协商月薪",
         "candidate_target": 15000,
-        "candidate_floor": 13000,  # 候选人最低可接受
-        "hr_opening": 12000
+        "candidate_floor_visible": 13000,  # UI展示
+        "hr_opening": 12000,
+
+        # ⭐隐藏设定（不展示）
+        "hr_floor_hidden": 15000
     }
 }
 
@@ -42,20 +49,20 @@ case_key = st.sidebar.selectbox("📦 Select Case", list(CASES.keys()))
 case = CASES[case_key]
 
 # ======================
-# UI 展示 CASE 信息（重点优化）
+# UI 展示（只展示“可见信息”）
 # ======================
 st.sidebar.markdown("## 📌 Case Info")
 
 if case_key == "price_case":
     st.sidebar.write("**类型：价格谈判**")
     st.sidebar.write("买家目标：85 元/件")
-    st.sidebar.write("买家底线：100 元/件（最高可接受）")
+    st.sidebar.write(f"买家底线（公开）：{case['buyer_floor_visible']} 元/件")
     st.sidebar.write("卖家开价：120 元/件")
 
 else:
     st.sidebar.write("**类型：薪资谈判**")
     st.sidebar.write("候选人目标：15000 元/月")
-    st.sidebar.write("候选人底线：13000 元/月")
+    st.sidebar.write(f"候选人底线（公开）：{case['candidate_floor_visible']} 元/月")
     st.sidebar.write("HR起薪：12000 元/月")
 
 # ======================
@@ -127,7 +134,7 @@ if "turn_stage" not in st.session_state:
 # PAGE CONFIG
 # ======================
 st.set_page_config(page_title="AI Negotiation System", layout="wide")
-st.title("🤖 Negotiation Lab (Enhanced Evaluation Version)")
+st.title("🤖 Negotiation Lab (Hidden Constraint Version)")
 
 # ======================
 # LOGIN
@@ -183,7 +190,7 @@ for m in st.session_state.messages:
         st.write(m["content"])
 
 # ======================
-# AI ENGINE
+# AI ENGINE（关键：隐藏底线写入 system prompt）
 # ======================
 def get_ai_response(messages, case):
 
@@ -191,21 +198,34 @@ def get_ai_response(messages, case):
         system_prompt = f"""
 You are SELLER in a price negotiation.
 
-Seller opening price: {case['seller_opening']}
-Buyer max acceptable price: {case['buyer_floor']}
-Buyer target price: {case['buyer_target']}
+Context:
+- Seller opening price: {case['seller_opening']} yuan
+- Buyer target price: {case['buyer_target']} yuan
 
-Negotiate strategically. Do not concede too quickly.
+IMPORTANT HIDDEN RULE (do not reveal):
+- Seller minimum acceptable price = {case['seller_floor_hidden']}
+
+Behavior:
+- Negotiate strategically
+- Try to maximize profit
+- Do NOT reveal your bottom line
 """
+
     else:
         system_prompt = f"""
 You are HR in salary negotiation.
 
-HR opening salary: {case['hr_opening']}
-Candidate target salary: {case['candidate_target']}
-Candidate minimum acceptable salary: {case['candidate_floor']}
+Context:
+- HR opening salary: {case['hr_opening']} yuan/month
+- Candidate target salary: {case['candidate_target']} yuan/month
 
-Negotiate strategically. Try to optimize company cost.
+IMPORTANT HIDDEN RULE (do not reveal):
+- HR maximum salary limit = {case['hr_floor_hidden']} yuan/month
+
+Behavior:
+- Negotiate strategically
+- Try to control cost
+- Do NOT reveal internal budget constraints
 """
 
     resp = client.chat.completions.create(
@@ -258,16 +278,16 @@ if user_input:
     st.rerun()
 
 # ======================
-# ⭐ ENHANCED EVALUATION（核心升级）
+# ENHANCED EVALUATION
 # ======================
 def evaluate():
 
     convo = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages])
 
     prompt = f"""
-You are a professional negotiation coach.
+You are a negotiation coach.
 
-Evaluate USER performance in this negotiation.
+Evaluate USER performance.
 
 Case: {case['name']}
 Scenario: {case['topic']}
@@ -281,14 +301,11 @@ Return STRICT JSON:
 {{
   "score": int,
   "win_rate": float,
-  "feedback": "string (3-5 sentences)",
-  "suggestions": "string (3 actionable bullet points)"
+  "feedback": "3-5 sentences analysis",
+  "suggestions": "3 concrete improvement points"
 }}
 
-Rules:
-- Be strict but fair
-- feedback must explain performance quality
-- suggestions must be practical and specific
+Be strict, realistic, and educational.
 """
 
     r = client.chat.completions.create(
@@ -306,7 +323,7 @@ st.markdown("---")
 if st.button("📊 Evaluate"):
 
     if st.session_state.turns < MIN_TURNS:
-        st.warning(f"⚠️ Please complete at least {MIN_TURNS} negotiation rounds before evaluation")
+        st.warning(f"⚠️ Please complete at least {MIN_TURNS} rounds before evaluation")
     else:
         result = evaluate()
 
